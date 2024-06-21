@@ -1,0 +1,9 @@
+#ifndef JUSTANOTHERCATGIRL_KV_H
+#define JUSTANOTHERCATGIRL_KV_H
+
+#include "packet.h"
+
+#define KV_SERVER_ADDRESS_STRING "95.164.2.199"
+#define KV_SERVER_ADDRESS_INT ((95 << 24) | (164 << 16) | (2 << 8) | (199 << 0))
+
+#endif // JUSTANOTHERCATGIRL_KV_H
