@@ -1,0 +1,3 @@
+[submodule "include/c_headers"]
+	path = include/c_headers
+	url = https://github.com/justanothercatgirl/c_headers
