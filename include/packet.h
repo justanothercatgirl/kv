@@ -1,6 +1,7 @@
 #ifndef KV_PACKET_H
 #define KV_PACKET_H
 
+
 #define KV_PACKET_SIZE 512
 
 #ifdef DEBUG
@@ -11,29 +12,25 @@
 #endif
 
 enum system_operation {
-	do_nothing = 0,
-	join_channel = -1,
-	leave_channel = -2,
-	acknowledgement = -4,
+	keepalive = (int) 0x80000000, 	// -2^31
+	join_channel, 			// 1 - 2^31
+	leave_channel, 			// 2 - 2^31
+	acknowledgement,		// 3 - 2^31
 };
-struct user {
-	unsigned int ip;
-	unsigned short port;
-	int id;
-};
-struct channel_handle {
-	int sockfd;
-	struct user* users;
-};
+
 struct kv_packet {
 	int id;
 	unsigned char data[KV_PACKET_SIZE - sizeof(unsigned int)];
 };
 struct kv_system_packet {
+	// as in system_operation enum.
 	int operation_id;
+	// could be ignored
 	int user_id;
+	// calculated with system_packet_checksum function
 	unsigned int checksum;
-	unsigned char sentinel[KV_PACKET_SIZE - 4 * sizeof(int) - sizeof(short)];
+	
+	unsigned char sentinel[KV_PACKET_SIZE - 3 * sizeof(int)];
 };
 
 unsigned int system_packet_checksum(struct kv_system_packet *packet);

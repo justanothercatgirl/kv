@@ -9,15 +9,21 @@ void thread_loop(void) {
 	struct kv_packet **recvd_data = array_new(struct kv_packet*, 100);
 	struct kv_packet work_buffer;
 	size_t recvd_index = 0;
+	int recv_flag = MSG_DONTWAIT;
 	while (true) {
 		struct sockaddr_in client_addr;
-		socklen_t client_addr_len;
+		socklen_t client_addr_len; // unused
 		int recvlength = recvfrom(channel->sockfd, &work_buffer, 
-					  KV_PACKET_SIZE, MSG_DONTWAIT, 
+					  KV_PACKET_SIZE, recv_flag, 
 					  (struct sockaddr*)&client_addr, &client_addr_len);
 		if (recvlength > 0) {
 			DEBUGF("rec_id = %i\n", work_buffer.id);
-			if (work_buffer.id <= 0) handle_system_packet(&work_buffer, channel);
+			if (work_buffer.id <= 0) {
+				handle_system_packet(&work_buffer, &client_addr, channel);
+				continue;
+			} else {
+				recv_flag |= MSG_DONTWAIT;
+			}
 			struct kv_packet *kv_copy = malloc(KV_PACKET_SIZE);
 			memcpy(kv_copy, &work_buffer, KV_PACKET_SIZE);
 			++recvd_index;
@@ -27,16 +33,14 @@ void thread_loop(void) {
 				recvd_data[recvd_index] = kv_copy;
 			}
 		} else if (errno == EWOULDBLOCK) {
-			if (array_size(recvd_data) == 0) {
-				// TODO: don't set O_NONBLOCK and wait for data
-				continue;
-			}
+			if (array_size(recvd_data) == 0) recv_flag &= ~MSG_DONTWAIT;
 			send_packets_back(recvd_data, channel);
 			clear_packet_array(recvd_data);
 		} else {
 			perror("thread_loop failed");
 		}
 	}
+	array_free(recvd_data);
 	channel_uninit(channel);
 }
 
@@ -67,37 +71,24 @@ struct channel_handle *channel_init(void) {
 
 void channel_uninit(struct channel_handle *handle) {
 	array_free(handle->users);
-	if (close(handle->sockfd) == -1) perror("could not gracefully uninitialize channel");
+	if (close(handle->sockfd) == -1) 
+		perror("could not gracefully uninitialize channel");
 	free(handle);
 }
 
-enum system_operation handle_system_packet(struct kv_packet* packet, struct channel_handle* handle) {
+void handle_system_packet(struct kv_packet* packet, struct sockaddr_in *source, struct channel_handle* handle) {
 	struct kv_system_packet* spacket = (struct kv_system_packet*) packet;
-	if (system_packet_checksum(spacket) != spacket->checksum) return do_nothing;
+	if (system_packet_checksum(spacket) != spacket->checksum) return;
 	switch (spacket->operation_id) {
-	case do_nothing: return do_nothing;
-	case join_channel: {
-		DEBUGF("someone joined the channel: id=%i\n", spacket->user_id);
-		struct user user = {
-			.ip = ntohl(spacket->return_address),
-			.port = ntohs(spacket->return_port),
-			.id = ntohl(spacket->user_id)
-		};
-		if (!array_binary_search(handle->users, &user, __user_cmp)) {
-			array_push(handle->users, user);
-			array_qsort(handle->users, __user_cmp);
-		}
-		struct sockaddr_in reply_addr = {.sin_family = AF_INET, .sin_port = spacket->return_port, .sin_addr = {spacket->return_address} };
-		struct kv_system_packet reply = {.user_id = 0, .return_address = 0, .return_port = 0, .operation_id = acknowledgement};
-		sendto(handle->sockfd, &reply, KV_PACKET_SIZE,  0, (struct sockaddr*)&reply_addr, sizeof(reply_addr));
-	} return do_nothing;
-	case shutdown_socket: return shutdown_socket;
-	default: return do_nothing;
+	case keepalive: TODO;
+	case join_channel: TODO;
+	case leave_channel: TODO;
+	case acknowledgement: TODO;
+	default: TODO;
 	}
 }
 
 void send_packets_back(struct kv_packet** packets, struct channel_handle* handle) {
-	/*DEBUGF("");*/
 	for (size_t i = 0; i < array_size(handle->users); ++i) {
 		struct user* current_user = &handle->users[i];
 		struct sockaddr_in destination = {
@@ -128,3 +119,8 @@ void clear_packet_array(struct kv_packet **array) {
 	}
 }
 
+int __user_cmp(const void* a, const void* b) {
+	struct user *_a = (struct user*)a,
+		    *_b = (struct user*)b;
+	return _a->id - _b->id;
+}
