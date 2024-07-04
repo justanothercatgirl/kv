@@ -3,36 +3,24 @@
 
 #include <kv.h>
 
-#include <unistd.h>
+#include <netinet/ip.h>
+#include <stdbool.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <netinet/ip.h>
+#include <unistd.h>
 
-#include <stdbool.h>
+#include <pthread.h>
 
-struct user {
-	long id;
-	unsigned int ip;
-	unsigned short port;
-	unsigned long last_keepalive;
-};
-int __user_cmp(const void* a, const void* b);
-
-struct channel_handle {
-	int sockfd;
-	struct user* users;
+/// Required for the calling thread to set socket file descriptor
+struct thread_loop_arg {
+	int *sock_dest;
+	pthread_mutex_t *sock_mx;
+	pthread_cond_t *sock_ready_cond;
+	size_t owner;
+	const unsigned char *pubkey;
 };
 
 // main function that manages every channel
-void thread_loop(void);
-
-struct channel_handle *channel_init(void);
-void channel_uninit(struct channel_handle *handle);
-
-void send_packets_back(struct kv_packet** packets, struct channel_handle *handle);
-void handle_system_packet(struct kv_packet* packet, struct sockaddr_in *source, struct channel_handle* handle);
-
-void clear_packet_array(struct kv_packet **array);
-
+void *thread_loop(void *);
 
 #endif // KV_SERVER_CHANNEL_H

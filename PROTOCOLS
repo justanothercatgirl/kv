@@ -1,0 +1,112 @@
+This document describes protocols that are implemented on the server-side 
+of "KV" for real-time communication.
+
+0. General structure..
+The server uses a single TCP socket for all control packets: It manages 
+channels, users, and in theory the database, though this is not currently 
+implemented. This socket has a private-public key pair associated with it,
+which is used by channels to authorize messages from the system. 
+Each channel is a separate thread that runs a UDP socket. It first receives
+all data, saves it, processes system packets and sends data back to all peers.
+
+1. The TCP interface.
+Defined in header `server/tcp.h`. Each connection consists of request-response
+exchange. When the peer connects, it sends data in the following order: 
+the TYPE of the command as defined in `enum commd_type` and `struct commd` 
+(possibly casted from commd_* structs). Then server responds with success
+status (`size_t`): it is positive if command executed normally, and is zero if 
+anything went wrong. If returned status is zero, further information on the
+error is sent (see `struct commd_error_report` and `enum commd_error`). Refer
+to documentation of specific functions for more details on return status.
+1.1. Permissions.
+`enum permissions` is a flag-enum, which means that each permission is 1 bit,
+and to combine them you use bitwise-or. 
+`perm_none`: placeholder for no permissions
+`perm_add_channel`: create any channels.
+`perm_rm_channel`: remove any channels. Note that you don't need it if you are
+		   owner of the channel (the one who created it).
+`perm_add_user`: add any user to any channel. 
+`perm_kick_user`: remove any user from any channel.
+`perm_register_user`: register new user in a system. Usually only admin has this.
+`perm_delete_user`: unregister any user in a system.
+`perm_admin`: All permissions. Equivalent to root user on linux.
+1.2. Available commands.
+`CMD_CREATE`: create a new channel. `struct commd_create` has only one field,
+uid (user id of one performing request). Returns Channel ID of newly created
+channel (which is posix thread ID under the hood). Needed permissions for the
+uid: `perm_add_channel`.
+`CMD_DELETE`: terminate a channel. `struct commd_delete` has 2 fiels, uid (who
+is deleting a channel) and chid (channel id). Returns ID of the deleted 
+channel. uid must either have `perm_rm_channel` or be owner of the channel to 
+be able to perform the request.
+`CMD_JOIN`: Join a channel. `struct commd_join` has 3 fields: uid, juid and 
+chid. uid is the id of user performing the request, juid is user that is
+joining channel with id chid. if uid != juid, uid must have `perm_add_user` 
+permission. Rerurns port of channel socket.
+`CMD_LEAVE`: Leave a channel. `struct commd_leave` has same fields as join 
+command, except instead of juid the field is called luid (leaving user id).
+returns 1. if uid != luid, uid must have `perm_kick_user`.
+`CMD_REGISTER`: Register new user. `struct commd_register` has 2 fields:
+auid (administrator user id) and perm (permissions). If auid == 0, this is a
+regular register request, and perm field will be ignored. If auid is set and
+auid has `perm_register_user`, the new user with permissions perm is created.
+returns User ID of created user.
+`CMD_UNREGISTER`: Delete a user. `struct commd_unregister` has 2 fields:
+auid (admin user ID) and uid (ID to be deleted). if auid == uid, no permissions
+are reuqired. Otherwise, auid must have `perm_delete_user`. Returns ID of
+deleted user.
+`CMD_GET_PORT`: Get a port of UDP socket of a channel. `struct commd_get_port`
+has 1 field: chid (ID of a channel). Returns port number of UDP socket. No
+permission required.
+`CMD_GET_CHANNELS`: Get a list of all active channels. 
+`struct commd_get_channels` is a typedef to void, which means it takes no
+arguments. Returns an array as follows: first 8 bytes are size_t array_size,
+next 8*array_size bytes are channels. Last 8 bytes are zeroes (they are after
+the last channel). Possible memory layout (divided in 8 byte blocks):
+| 5 | 69 | 70 | 71 | 72 | 42 | 0 |
+  ^   ^                   ^    ^
+  |   |-start of data     |    |-leading zero
+  |-size of array         |-end of data
+1.3. Functions.
+As the interface mainly uses `size_t` type for communications, there are 2
+functions that are for some reason not present in linux api:
+`size_t htonzu(size_t)`: Host TO Network siZe Unsigned: convert size_t to 
+network byte order.
+`size_t ntohzu(size_t)`: Network TO Host siZe Unsigned: convert size_t from
+network byte order.
+1.4. Notes.
+As The project is still heavily under development, things may change
+drastically. For example, it is planned that each `CMD_*` that requires
+authiorization will be using a signing scheme, so that the server can verify
+source of the request. For now this is not a top-priority because the develper
+still needs to at least get this thing up and workingm even without security.
+Basically templeOS level of security for now, good to guard against accidental 
+errors, bad against targeted attacks.
+
+2. The UDP interface.
+As it was mentioned before, each channel is a pthread running a UDP socket.
+UDP has a `packet` (defined in `inclue/packet.h`). There are 2 types of 
+packets: system paclets and user packets. Most system packets must come from
+the main server and must be signed in order to be processed. 
+ALL PACKETS MUST BE OF SIZE "KV_PACKET_SIZE" WHICH IS 512 BYTES CURRENTLY.
+Each regular packet consists of uid of sender and acutal data, which is 
+UNCHECKED by the server in ANY way. If UID hasn't joined channel, the packet
+is discarded. Otherwise, the packet is forwarded to every joined UID.
+Each system packet is magic bytes (which are 0xFFFFFFFF), then negative int 
+`operation_id` (as defined in `enum system_operation`), then uid,
+then checksum (calculated with `system_packet_checksum` function).
+2.1. System packet operations available to users.
+`keepalive`: channel removes peers that haven't sent packets for 60 seconds.
+required fields: all except sentinel, it's unchecked.
+
+3. UDP data specification
+It is expected that data sent over UDP will be opus-encoded audio. As to how
+this would be done, there is no information yet because development hasn't 
+reached this point. Also, server doesn't care what you send to it, it only 
+checks for permissions.
+
+4. Registration/Authorization.
+UID MUST NOT HAVE LOWER OR UPPER 4 BYTES BE EQUAL TO 0xFF
+- okay, i think i implemented this
+
+

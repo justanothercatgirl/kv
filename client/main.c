@@ -1,122 +1,79 @@
 #include <netinet/in.h>
-#include <opus/opus.h>
-
-#include <netinet/ip.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-
-#include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
+#include <pthread.h>
 
-#include "../server/channel.h"
+#include "../server/tcp.h"
 
-#define CONTAINER_IMPLEMENTATION
-#include <container.h>
-#undef CONTAINER_IMPLEMENTATION
+#include <errno.h>
+#include <packet.h>
 
-void setup_socket(void)
-{
-	int		   serv_sock;
-	struct sockaddr_in serv_addr = {.sin_family = AF_INET,
-					.sin_port   = htons(8082),
-					.sin_addr   = {0}};
-	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
-	if ((serv_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
-		perror("socket");
-		exit(EXIT_FAILURE);
-	}
-	if (connect(serv_sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) != 0) {
-		perror("connect");
-		exit(EXIT_FAILURE);
-	}
-	const char* buf = "Hello, world!\n";
-	size_t buflen = strlen(buf);
-	if (send(serv_sock, buf, buflen, 0) < 0) {
-		perror("send");
-		exit(EXIT_FAILURE);
-	}
-	puts("sent!");
-}
+#define W printf("LINE %i\n", __LINE__)
 
-void test_channel(void) {
-	int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	struct sockaddr_in client = {
-		.sin_family = AF_INET,
-		.sin_port = 8080,
-		.sin_addr = {INADDR_ANY}
-	};
+int commsock;
+enum commd_error cerr;
 
-	(void)bind(sock, (struct sockaddr*)&client, sizeof(client));
+void setup_globals(void) { commsock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); }
+
+size_t sendtoserv(int sock, enum commd_type t, struct commd *cmd, enum commd_error  * NULLABLE e) {
+	sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	struct sockaddr_in serv = {
-		.sin_family = AF_INET,
-		.sin_port = 6969
-	};
-	inet_pton(AF_INET, "127.0.0.1", &serv.sin_addr);
-	struct kv_system_packet req = {
-		.operation_id = join_channel,
-		.return_port = 8080,
-		.return_address = htonl((127 << 24) | 1),
-		.user_id = 69,
-	}, resp;
-	req.checksum = system_packet_checksum(&req);
-	sendto(sock, &req, KV_PACKET_SIZE, 0, (struct sockaddr*)&serv, sizeof(serv));
-	recvfrom(sock, &resp, KV_PACKET_SIZE, 0, NULL, NULL);
-	if (resp.operation_id == acknowledgement) {
-		puts("УРА УРА МЕНЯ ПУСТИЛИ");
-	} else {
-		puts("О нет, что же пошло не так..");
-	}
-	
-	int pid = fork();
-	if (pid == 0) {
-		sleep(2);
-		puts("child activated");
-		sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-		struct sockaddr_in client = {
-			.sin_family = AF_INET,
-			.sin_port = 8081,
-			.sin_addr = {INADDR_ANY}
-		};
-		(void)bind(sock, (struct sockaddr*)&client, sizeof(client));
-		req.user_id = 80809;
-		req.return_port = 8081;
-		req.checksum = system_packet_checksum(&req);
-		sendto(sock, &req, KV_PACKET_SIZE, 0, (struct sockaddr*)&serv, sizeof(serv));
-		recvfrom(sock, &resp, KV_PACKET_SIZE, 0, NULL, NULL);
-		if (resp.operation_id == acknowledgement) {
-			puts("УРА УРА МЕНЯ ПУСТИЛИ (child)");
-			struct kv_packet message;
-			message.id = 70;
-			int i = 0;
-			for (const char * x = "ПРИВЕЕЕТ :D\n\0"; *x; ++x) {
-				message.data[i] = *x;
-				++i; 
-				message.data[i] = 0;
-			}
-			message.data[100] = 0;
-			sendto(sock, &message, KV_PACKET_SIZE, 0, (struct sockaddr*)&serv, sizeof(serv));
-		} else {
-			puts("О нет, что же пошло не так.. (child)");
-		}
+		.sin_family = AF_INET, .sin_port = htons(TCP_PORT), .sin_addr = {htonl(INADDR_LOOPBACK)}};
+	while (connect(sock, (struct sockaddr *)&serv, sizeof(serv)) != 0) sleep(1);
+	t = htonl(t);
+	if (send(sock, &t, sizeof(t), 0) <= 0) { *e = ERR_SERV; return 0; }
+	if (send(sock, cmd, sizeof(*cmd), 0) <= 0) { *e = ERR_SERV; return 0; }
 
-	} else {
-		memset(&req, 0, KV_PACKET_SIZE);
-		recvfrom(sock, &req, KV_PACKET_SIZE, 0, NULL, NULL);
-		struct kv_packet *fromchild = (struct kv_packet*)&req;
-		printf("req.id = %i, req.data = %s (parent recv)\n", fromchild->id, fromchild->data);
-		wait(NULL);
+	size_t resp;
+	if (recv(sock, &resp, sizeof(resp), 0) <= 0) {*e = ERR_SERV; return 0; }
+	resp = ntohzu(resp);
+	if (resp == 0 && e != NULL) {
+		read(sock, e, sizeof(*e));
+		*e = ntohl(*e);
 	}
-
+	shutdown(sock, SHUT_RDWR);
+	close(sock);
+	return resp;
 }
 
-int main(int argc, char *argv[])
-{
+size_t register_user(int perm) {
+	struct commd_register r = {.auid = htonzu(0), .perm = htonzu(perm)};
+	if (cerr != ERR_SUCCESS) DEBUGF("Server returned error %i: %s. errno: %s\n", cerr, kv_strerror(cerr), strerror(errno));
+	return sendtoserv(commsock, CMD_REGISTER, (struct commd *)&r, &cerr);
+}
+
+void unreg_user(size_t u) {
+	struct commd_unregister unreg = {.auid = htonzu(u), .uid = htonzu(u)};
+	size_t resp = sendtoserv(commsock, CMD_UNREGISTER, (struct commd *)&unreg, &cerr);
+	if (cerr != ERR_SUCCESS) DEBUGF("Server returned error %i: %s. errno: %s\n", cerr, kv_strerror(cerr), strerror(errno));
+	printf("sendtoserv returned %zu\n", resp);
+}
+
+size_t create_channel(size_t u) {
+	struct commd_create c = {.uid = htonzu(u)};
+	size_t resp = sendtoserv(commsock, CMD_CREATE, (struct commd *)&c, &cerr);
+	if (cerr != ERR_SUCCESS) DEBUGF("Server returned error %i: %s\n", cerr, kv_strerror(cerr));
+	return resp;
+}
+
+void* thr(void* a) {
+	(void)a;
+	size_t uid = register_user(perm_none);
+	printf("uid: %zu\n", uid);
+	unreg_user(uid);
+	uid = register_user(perm_admin);
+	printf("uid: %zu\n", uid);
+	size_t chid = create_channel(uid);
+	printf("chid: %zu\n", chid);
+	return NULL;
+}
+
+int main(int argc, char *argv[]) {
 	(void)argc;
 	(void)argv;
-	test_channel();
+	for (int i = 0; i < 1; ++i) {
+		pthread_t t;
+		pthread_create(&t, NULL, thr, NULL);
+	}
+	sleep(1);
 	return 0;
 }
